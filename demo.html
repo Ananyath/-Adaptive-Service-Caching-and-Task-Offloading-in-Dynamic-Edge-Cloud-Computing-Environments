@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cost-Aware Adaptive Service Caching & Task Offloading Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            slate: {
+              850: '#151e2e',
+              925: '#0c121e',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* Custom scrollbar and subtle animations */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+    @keyframes swapPulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); border-color: #10b981; }
+      70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); border-color: #10b981; }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .swap-flash {
+      animation: swapPulse 0.85s ease-out;
+    }
+
+    input[type="range"] {
+      accent-color: #10b981;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans antialiased min-h-screen flex flex-col">
+
+  <!-- Top Navigation Header -->
+  <header class="bg-slate-900/90 border-b border-slate-800 sticky top-0 z-30 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20 shrink-0">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white">
+              Cost-Aware Adaptive Service Caching & Task Offloading
+            </h1>
+            <span class="px-2 py-0.5 text-[11px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-full">
+              Dynamic Edge-Cloud Simulator
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">
+            Extending Gao et al. (IEEE Access 2022, LMPSO) to Non-Stationary Workloads & Replacement-Cost-Aware Adaptation
+          </p>
+        </div>
+      </div>
+
+      <!-- View Mode Tabs -->
+      <div class="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 self-start md:self-auto">
+        <button id="tab-live" onclick="switchTab('live')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-emerald-600 text-white shadow">
+          Live Interactive Simulator
+        </button>
+        <button id="tab-bench" onclick="switchTab('bench')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white">
+          15-Seed Benchmark Results
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN LIVE SIMULATOR VIEW -->
+  <main id="view-live" class="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 space-y-6 flex-1">
+
+    <!-- Control Bar & Parameter Panel -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-end">
+
+        <!-- Selectors (5 cols) -->
+        <div class="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+              Workload Scenario
+            </label>
+            <select id="sel-scenario" onchange="resetSimulation()" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="sudden_spike" selected>Sudden Spike (at Slot 25)</option>
+              <option value="gradual">Gradual Popularity Drift</option>
+              <option value="static">Static Zipf Workload (Base)</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+              Caching & Offloading Policy
+            </label>
+            <select id="sel-policy" onchange="resetSimulation()" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="proposed" selected>Proposed (Cost-Aware Adaptive)</option>
+              <option value="static">Static Caching (Base Paper)</option>
+              <option value="greedy">Greedy (Cost-Blind)</option>
+              <option value="lru">LRU (Reactive)</option>
+              <option value="lfu">LFU (Reactive)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Sliders (4 cols) -->
+        <div class="lg:col-span-4 grid grid-cols-2 gap-3 bg-slate-950/70 p-3 rounded-xl border border-slate-800/80">
+          <div>
+            <div class="flex justify-between text-[11px] mb-1">
+              <span class="text-slate-400">Cost Weight (λ)</span>
+              <span id="val-lambda" class="font-mono text-emerald-400 font-semibold">0.015</span>
+            </div>
+            <input id="slider-lambda" type="range" min="0" max="0.30" step="0.005" value="0.015" oninput="updateParamLabels()" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-[11px] mb-1">
+              <span class="text-slate-400">EWMA Decay (γ)</span>
+              <span id="val-gamma" class="font-mono text-emerald-400 font-semibold">0.65</span>
+            </div>
+            <input id="slider-gamma" type="range" min="0.10" max="0.90" step="0.05" value="0.65" oninput="updateParamLabels()" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-[11px] mb-1">
+              <span class="text-slate-400">Edge Storage</span>
+              <span id="val-storage" class="font-mono text-sky-400 font-semibold">300 GB</span>
+            </div>
+            <input id="slider-storage" type="range" min="150" max="500" step="25" value="300" onchange="resetSimulation()" oninput="updateParamLabels()" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer" />
+          </div>
+
+          <div>
+            <div class="flex justify-between text-[11px] mb-1">
+              <span class="text-slate-400">Sim Speed</span>
+              <span id="val-speed" class="font-mono text-amber-400 font-semibold">1.0x</span>
+            </div>
+            <input id="slider-speed" type="range" min="1" max="5" step="1" value="2" oninput="updateParamLabels()" class="w-full h-1.5 bg-slate-800 rounded-lg cursor-pointer" />
+          </div>
+        </div>
+
+        <!-- Action Buttons (3 cols) -->
+        <div class="lg:col-span-3 flex flex-wrap gap-2 justify-start lg:justify-end">
+          <button id="btn-play" onclick="togglePlay()" class="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow-lg shadow-emerald-600/20">
+            <span id="icon-play">▶</span>
+            <span id="text-play">Start</span>
+          </button>
+
+          <button onclick="stepSlot()" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition border border-slate-700" title="Advance 1 Time Slot">
+            Step +1
+          </button>
+
+          <button onclick="resetSimulation()" class="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition border border-slate-700" title="Reset Simulation">
+            Reset
+          </button>
+
+          <button onclick="triggerManualSpike()" class="w-full px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-semibold transition flex items-center justify-center gap-1.5">
+            <span>⚡</span> Trigger Sudden Demand Spike Now
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 6 Real-Time KPI Metric Cards -->
+    <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Cache Hit Ratio</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        </div>
+        <div id="kpi-hit" class="text-2xl font-bold font-mono text-white mt-1.5">0.0%</div>
+        <div id="kpi-slot-badge" class="text-[11px] text-slate-500 mt-1 font-mono">Slot 0 / 50</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Accepted Tasks</span>
+          <span class="w-2 h-2 rounded-full bg-teal-400"></span>
+        </div>
+        <div id="kpi-accept" class="text-2xl font-bold font-mono text-emerald-400 mt-1.5">0.0%</div>
+        <div class="text-[11px] text-slate-500 mt-1">Hard deadline met</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Bandwidth Cost</span>
+          <span class="w-2 h-2 rounded-full bg-rose-400"></span>
+        </div>
+        <div id="kpi-bw" class="text-2xl font-bold font-mono text-white mt-1.5">0</div>
+        <div id="kpi-swaps" class="text-[11px] text-slate-500 mt-1 font-mono">0 cache swaps</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Retrieval Downtime</span>
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+        </div>
+        <div id="kpi-downtime" class="text-2xl font-bold font-mono text-white mt-1.5">0.0s</div>
+        <div class="text-[11px] text-slate-500 mt-1">Service fetch delay</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Avg Completion</span>
+          <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+        </div>
+        <div id="kpi-latency" class="text-2xl font-bold font-mono text-white mt-1.5">0.00s</div>
+        <div class="text-[11px] text-slate-500 mt-1">End-to-end latency</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-[11px] font-medium text-slate-400">Decision Latency</span>
+          <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+        </div>
+        <div id="kpi-runtime" class="text-2xl font-bold font-mono text-purple-300 mt-1.5">0.00ms</div>
+        <div class="text-[11px] text-slate-500 mt-1">vs ~420ms LMPSO</div>
+      </div>
+    </section>
+
+    <!-- Middle Row: Live Topology Canvas + Real-Time Time-Series Chart -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left: Animated Edge-Cloud Architecture Canvas (6 cols) -->
+      <div class="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <h2 class="text-sm font-bold text-white">Live Edge-Cloud Offloading Topology</h2>
+            <p class="text-xs text-slate-400">Real-time task routing across 10 Edge Servers (60 Mbps) & Cloud (15 Mbps)</p>
+          </div>
+          <div class="flex items-center gap-3 text-[11px] font-medium">
+            <span class="flex items-center gap-1 text-emerald-400"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block"></span>Edge Hit</span>
+            <span class="flex items-center gap-1 text-sky-400"><span class="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block"></span>Cloud Fallback</span>
+            <span class="flex items-center gap-1 text-rose-400"><span class="w-2.5 h-2.5 rounded-full bg-rose-400 inline-block"></span>Deadline Miss</span>
+          </div>
+        </div>
+
+        <div id="topology-container" class="relative w-full h-72 sm:h-80 bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
+          <canvas id="topology-canvas" class="w-full h-full block"></canvas>
+          <div id="spike-banner" class="hidden absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-amber-500/90 text-slate-950 font-bold text-xs shadow-lg animate-bounce">
+            ⚡ DEMAND SHIFT ACTIVE — WORKLOAD POPULARITY INVERTED!
+          </div>
+        </div>
+
+        <!-- Live Event Console Log -->
+        <div class="mt-3 bg-slate-950 border border-slate-800 rounded-xl p-2.5 h-24 overflow-y-auto font-mono text-[11px] space-y-1" id="event-log">
+          <div class="text-slate-400">[System] Ready. Press <span class="text-emerald-400 font-semibold">Start</span> or <span class="text-slate-200 font-semibold">Step +1</span> to simulate dynamic edge-cloud arrivals.</div>
+        </div>
+      </div>
+
+      <!-- Right: Live Dual-Metric Time Series Chart (6 cols) -->
+      <div class="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 flex flex-col">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <div>
+            <h2 class="text-sm font-bold text-white">Real-Time Adaptation & Overhead Telemetry</h2>
+            <p class="text-xs text-slate-400">Cache Hit Ratio (%) vs. Cumulative Replacement Bandwidth Cost</p>
+          </div>
+          <div class="flex items-center gap-3 text-[11px] font-medium">
+            <span class="flex items-center gap-1.5 text-emerald-400"><span class="w-3 h-0.5 bg-emerald-400 inline-block"></span>Hit Ratio (%)</span>
+            <span class="flex items-center gap-1.5 text-rose-400"><span class="w-3 h-0.5 bg-rose-400 inline-block"></span>BW Cost</span>
+          </div>
+        </div>
+
+        <div id="chart-container" class="relative w-full h-72 sm:h-80 bg-slate-950 rounded-xl border border-slate-800 p-2">
+          <canvas id="telemetry-canvas" class="w-full h-full block"></canvas>
+        </div>
+
+        <!-- Dynamic Formula Explanation Strip -->
+        <div class="mt-3 bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div class="font-mono text-slate-300">
+            <span class="text-emerald-400 font-semibold">Swap Rule:</span>
+            Utility(s<sub>new</sub>) − Utility(s<sub>victim</sub>) &gt; λ · Cost(s<sub>new</sub>)
+          </div>
+          <span class="text-[11px] text-slate-400">Prevents thrashing during transient noise</span>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Bottom Row: Live Edge Server Cluster Cache Inspector -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+        <div>
+          <h2 class="text-sm font-bold text-white">Live Edge Server Cluster Cache Inspector (10 Edge Nodes)</h2>
+          <p class="text-xs text-slate-400">Displays cached services (40–80 GB each), storage utilization, and flashes green when a cost-aware replacement occurs</p>
+        </div>
+        <div class="text-xs font-mono text-slate-400">
+          Catalog: <span class="text-white font-semibold">100 Services</span> | Edge CPU: <span class="text-white font-semibold">20 GHz</span> | Cloud CPU: <span class="text-white font-semibold">5 GHz</span>
+        </div>
+      </div>
+
+      <div id="edge-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+        <!-- Populated dynamically via JS -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- BENCHMARK RESULTS VIEW (15-SEED EXPERIMENTAL DATA) -->
+  <main id="view-bench" class="hidden max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 space-y-6 flex-1">
+
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-800">
+        <div>
+          <span class="px-2.5 py-0.5 text-[11px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 rounded-full">
+            15 Random Seeds • Sudden Popularity Spike Scenario • Paired t-Tests (p &lt; 0.05)
+          </span>
+          <h2 class="text-lg sm:text-xl font-bold text-white mt-2">
+            Empirical Evaluation Summary (From Python Simulation Suite)
+          </h2>
+          <p class="text-xs sm:text-sm text-slate-400 mt-1">
+            Comparing our Proposed Cost-Aware Adaptive Framework against Static (Gao et al. LMPSO), Greedy, LRU, and LFU baselines.
+          </p>
+        </div>
+        <button onclick="switchTab('live')" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold self-start md:self-auto transition">
+          ← Back to Live Simulator
+        </button>
+      </div>
+
+      <!-- Benchmark Comparison Table -->
+      <div class="overflow-x-auto mt-5">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="border-b border-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <th class="py-3 px-4">Caching Strategy</th>
+              <th class="py-3 px-4">Cache Hit Ratio (%)</th>
+              <th class="py-3 px-4">Accepted Tasks (%)</th>
+              <th class="py-3 px-4">Avg Completion (s)</th>
+              <th class="py-3 px-4">Replacement BW Cost</th>
+              <th class="py-3 px-4">Update Runtime (ms)</th>
+              <th class="py-3 px-4">Key Takeaway</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/80 text-xs sm:text-sm font-mono">
+            <tr class="hover:bg-slate-800/40">
+              <td class="py-3.5 px-4 font-sans font-semibold text-slate-300">Static Caching (Base Paper)</td>
+              <td class="py-3.5 px-4 text-rose-400">27.13%</td>
+              <td class="py-3.5 px-4 text-rose-400">32.42%</td>
+              <td class="py-3.5 px-4 text-slate-300">1.370s</td>
+              <td class="py-3.5 px-4 text-slate-400">0</td>
+              <td class="py-3.5 px-4 text-slate-400">441.46 ms (LMPSO)</td>
+              <td class="py-3.5 px-4 font-sans text-xs text-slate-400">Cannot adapt when demand shifts; 67.6% tasks fail deadlines</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="py-3.5 px-4 font-sans font-semibold text-slate-300">Greedy (Cost-Blind)</td>
+              <td class="py-3.5 px-4 text-amber-300">44.11%</td>
+              <td class="py-3.5 px-4 text-amber-300">47.91%</td>
+              <td class="py-3.5 px-4 text-slate-300">1.290s</td>
+              <td class="py-3.5 px-4 text-rose-400 font-bold">85,062</td>
+              <td class="py-3.5 px-4 text-slate-400">0.05 ms</td>
+              <td class="py-3.5 px-4 font-sans text-xs text-slate-400">Severe cache thrashing; 6.6× higher bandwidth overhead</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="py-3.5 px-4 font-sans font-semibold text-slate-300">LRU (Reactive)</td>
+              <td class="py-3.5 px-4 text-sky-400">72.85%</td>
+              <td class="py-3.5 px-4 text-sky-400">76.51%</td>
+              <td class="py-3.5 px-4 text-slate-300">1.081s</td>
+              <td class="py-3.5 px-4 text-rose-400">32,807</td>
+              <td class="py-3.5 px-4 text-slate-400">0.08 ms</td>
+              <td class="py-3.5 px-4 font-sans text-xs text-slate-400">High hit rate, but 2.56× more bandwidth cost than Proposed</td>
+            </tr>
+            <tr class="hover:bg-slate-800/40">
+              <td class="py-3.5 px-4 font-sans font-semibold text-slate-300">LFU (Reactive)</td>
+              <td class="py-3.5 px-4 text-sky-400">57.47%</td>
+              <td class="py-3.5 px-4 text-sky-400">61.85%</td>
+              <td class="py-3.5 px-4 text-slate-300">1.138s</td>
+              <td class="py-3.5 px-4 text-rose-400">51,607</td>
+              <td class="py-3.5 px-4 text-slate-400">0.08 ms</td>
+              <td class="py-3.5 px-4 font-sans text-xs text-slate-400">4.02× higher bandwidth cost; slow to evict stale heavy hitters</td>
+            </tr>
+            <tr class="bg-emerald-950/30 border-l-4 border-emerald-500">
+              <td class="py-3.5 px-4 font-sans font-bold text-emerald-400">Proposed (Cost-Aware Adaptive)</td>
+              <td class="py-3.5 px-4 text-emerald-400 font-bold">54.16%</td>
+              <td class="py-3.5 px-4 text-emerald-400 font-bold">58.89%</td>
+              <td class="py-3.5 px-4 text-emerald-300 font-bold">1.134s</td>
+              <td class="py-3.5 px-4 text-emerald-400 font-bold">12,840</td>
+              <td class="py-3.5 px-4 text-emerald-300 font-bold">1.38 ms</td>
+              <td class="py-3.5 px-4 font-sans text-xs text-emerald-200">Optimal balance: +26.5% acceptance vs Static, −85% BW vs Greedy, 300× faster than LMPSO</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Visual Highlight Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4">
+          <div class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">1. Adaptation Gain vs. Static</div>
+          <div class="text-2xl font-bold text-white mt-1">+99.6% Relative Hit Gain</div>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Cache hit ratio doubles from <span class="text-white font-mono">27.13%</span> to <span class="text-emerald-400 font-mono">54.16%</span> under sudden popularity shifts (<span class="font-mono">p = 4.88e-18</span>).
+          </p>
+        </div>
+
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4">
+          <div class="text-xs font-semibold text-sky-400 uppercase tracking-wider">2. Thrashing Reduction</div>
+          <div class="text-2xl font-bold text-white mt-1">−84.9% Bandwidth Cost</div>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Cuts backhaul swap overhead from <span class="text-rose-400 font-mono">85,062</span> (Greedy) down to <span class="text-emerald-400 font-mono">12,840</span> by amortizing retrieval delay over a lookahead window.
+          </p>
+        </div>
+
+        <div class="bg-slate-950 border border-slate-800 rounded-xl p-4">
+          <div class="text-xs font-semibold text-purple-400 uppercase tracking-wider">3. Real-Time Edge Scalability</div>
+          <div class="text-2xl font-bold text-white mt-1">1.38 ms Decision Time</div>
+          <p class="text-xs text-slate-400 mt-1.5 leading-relaxed">
+            Runs <span class="text-white font-semibold">~300× faster</span> per update than Gao et al.'s meta-heuristic LMPSO (<span class="font-mono">402–441 ms</span>), enabling sub-second online edge orchestration.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // =========================================================================
+    // 1. SYSTEM MODEL & SIMULATION STATE (Mirrors Python models.py & workload.py)
+    // =========================================================================
+    const NUM_SERVICES = 100;
+    const NUM_EDGES = 10;
+    const NUM_CLOUDS = 3;
+    const MAX_SLOTS = 50;
+    const TASKS_PER_SLOT = 40;
+    const SLOT_DURATION = 2.0;
+
+    let services = [];
+    let edges = [];
+    let clouds = [];
+    let ranking = [];
+    let ewmaDemand = [];
+    let lastUsed = [];
+    let freqCount = [];
+
+    let currentSlot = 0;
+    let isRunning = false;
+    let simTimer = null;
+
+    // Cumulative Metrics
+    let stats = {
+      totalTasks: 0,
+      acceptedTasks: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      bandwidthCost: 0,
+      retrievalDowntime: 0,
+      totalSwaps: 0,
+      completionTimes: [],
+      lastDecisionMs: 0,
+      hitHistory: [],
+      bwHistory: [],
+      spikeSlots: []
+    };
+
+    // Animated Particles for Topology Canvas
+    let particles = [];
+
+    // Deterministic seeded PRNG (Mulberry32) for clean reproducible behavior
+    function mulberry32(a) {
+      return function() {
+        let t = a += 0x6D2B79F5;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+    let rng = mulberry32(42);
+
+    function initSystem() {
+      rng = mulberry32(42);
+      const edgeStorageCap = parseFloat(document.getElementById('slider-storage').value);
+
+      // Generate 100 Services ([40, 80] GB storage, proportional retrieval delay & BW cost)
+      services = [];
+      for (let i = 0; i < NUM_SERVICES; i++) {
+        const storage = +(40 + rng() * 40).toFixed(1);
+        services.push({
+          id: i,
+          storageSize: storage,
+          retrievalTime: +(storage * 0.04).toFixed(2),
+          bandwidthCost: +(storage * 1.0).toFixed(1)
+        });
+      }
+
+      // Initialize 10 Edge Servers
+      edges = [];
+      lastUsed = [];
+      freqCount = [];
+      for (let i = 0; i < NUM_EDGES; i++) {
+        edges.push({
+          id: i,
+          cpuCapacity: 20.0,
+          storageCapacity: edgeStorageCap,
+          bandwidth: 60.0,
+          channels: new Array(10).fill(0),
+          cpuFreeTime: 0,
+          cached: new Set(),
+          readyTime: {},
+          justSwapped: false
+        });
+        lastUsed.push({});
+        freqCount.push(new Array(NUM_SERVICES).fill(0));
+      }
+
+      // Initialize 3 Cloud Servers
+      clouds = [];
+      for (let i = 0; i < NUM_CLOUDS; i++) {
+        clouds.push({
+          id: i,
+          cpuCapacity: 5.0,
+          bandwidth: 15.0,
+          channelFreeTime: 0,
+          cpuFreeTime: 0
+        });
+      }
+
+      ranking = Array.from({ length: NUM_SERVICES }, (_, i) => i);
+      ewmaDemand = new Array(NUM_SERVICES).fill(0);
+
+      // Warm-start cache using initial Zipf top services
+      for (let e = 0; e < NUM_EDGES; e++) {
+        const offset = e % 5;
+        const rotated = ranking.slice(offset).concat(ranking.slice(0, offset));
+        for (const sid of rotated) {
+          if (getEdgeFreeStorage(edges[e]) >= services[sid].storageSize) {
+            edges[e].cached.add(sid);
+            edges[e].readyTime[sid] = 0;
+            lastUsed[e][sid] = 0;
+          }
+        }
+      }
+
+      currentSlot = 0;
+      particles = [];
+      stats = {
+        totalTasks: 0,
+        acceptedTasks: 0,
+        cacheHits: 0,
+        cacheMisses: 0,
+        bandwidthCost: 0,
+        retrievalDowntime: 0,
+        totalSwaps: 0,
+        completionTimes: [],
+        lastDecisionMs: 0,
+        hitHistory: [],
+        bwHistory: [],
+        spikeSlots: []
+      };
+
+      document.getElementById('spike-banner').classList.add('hidden');
+      renderEdgeGrid();
+      updateKPIs();
+      drawTelemetryChart();
+    }
+
+    function getEdgeUsedStorage(es) {
+      let sum = 0;
+      es.cached.forEach(sid => { sum += services[sid].storageSize; });
+      return sum;
+    }
+
+    function getEdgeFreeStorage(es) {
+      return es.storageCapacity - getEdgeUsedStorage(es);
+    }
+
+    function sampleZipfService(alpha = 1.0) {
+      // Fast inverse-CDF approximation for Zipf rank sampling
+      const u = rng();
+      const rank = Math.min(
+        NUM_SERVICES - 1,
+        Math.floor(Math.pow(NUM_SERVICES, Math.pow(u, 1.35 / alpha)) - 1)
+      );
+      return ranking[Math.max(0, rank)];
+    }
+
+    // =========================================================================
+    // 2. TASK OFFLOADING & CACHING ALGORITHMS (Mirrors baselines.py & adaptive)
+    // =========================================================================
+    function estimateEdgeFinish(es, task) {
+      const inBits = task.inputData * 8.0;
+      const outBits = task.outputData * 8.0;
+      let bestCh = 0;
+      for (let c = 1; c < es.channels.length; c++) {
+        if (es.channels[c] < es.channels[bestCh]) bestCh = c;
+      }
+      const netStart = Math.max(task.arrivalTime, es.channels[bestCh]);
+      const netFinish = netStart + inBits / es.bandwidth;
+      const ready = es.readyTime[task.serviceId] || 0;
+      const cpuStart = Math.max(netFinish, es.cpuFreeTime, ready);
+      const cpuFinish = cpuStart + task.cpuDemand / es.cpuCapacity;
+      return { finish: cpuFinish + outBits / es.bandwidth, ch: bestCh, netFinish, cpuFinish };
+    }
+
+    function estimateCloudFinish(cs, task) {
+      const inBits = task.inputData * 8.0;
+      const outBits = task.outputData * 8.0;
+      const netStart = Math.max(task.arrivalTime, cs.channelFreeTime);
+      const netFinish = netStart + inBits / cs.bandwidth;
+      const cpuStart = Math.max(netFinish, cs.cpuFreeTime);
+      const cpuFinish = cpuStart + task.cpuDemand / cs.cpuCapacity;
+      return { finish: cpuFinish + outBits / cs.bandwidth, netFinish, cpuFinish };
+    }
+
+    function offloadTask(task) {
+      stats.totalTasks++;
+      const candidates = edges.filter(es => es.cached.has(task.serviceId));
+
+      if (candidates.length > 0) {
+        stats.cacheHits++;
+        let bestEs = candidates[0];
+        let bestEst = estimateEdgeFinish(bestEs, task);
+        for (let i = 1; i < candidates.length; i++) {
+          const est = estimateEdgeFinish(candidates[i], task);
+          if (est.finish < bestEst.finish) {
+            bestEs = candidates[i];
+            bestEst = est;
+          }
+        }
+
+        if (bestEst.finish <= task.arrivalTime + task.deadline) {
+          bestEs.channels[bestEst.ch] = bestEst.netFinish;
+          bestEs.cpuFreeTime = bestEst.cpuFinish;
+          stats.acceptedTasks++;
+          stats.completionTimes.push(bestEst.finish - task.arrivalTime);
+          spawnParticle('edge', bestEs.id);
+          return;
+        }
+      } else {
+        stats.cacheMisses++;
+      }
+
+      // Cloud fallback
+      let bestCs = clouds[0];
+      let bestCloudEst = estimateCloudFinish(bestCs, task);
+      for (let i = 1; i < clouds.length; i++) {
+        const est = estimateCloudFinish(clouds[i], task);
+        if (est.finish < bestCloudEst.finish) {
+          bestCs = clouds[i];
+          bestCloudEst = est;
+        }
+      }
+
+      if (bestCloudEst.finish <= task.arrivalTime + task.deadline) {
+        bestCs.channelFreeTime = bestCloudEst.netFinish;
+        bestCs.cpuFreeTime = bestCloudEst.cpuFinish;
+        stats.acceptedTasks++;
+        stats.completionTimes.push(bestCloudEst.finish - task.arrivalTime);
+        spawnParticle('cloud', bestCs.id);
+      } else {
+        spawnParticle('reject', 0);
+      }
+    }
+
+    function installService(es, sid, currentTime, evictionOrder) {
+      if (es.cached.has(sid)) return false;
+      const svc = services[sid];
+
+      for (const victimId of evictionOrder) {
+        if (getEdgeFreeStorage(es) >= svc.storageSize) break;
+        if (es.cached.has(victimId) && victimId !== sid) {
+          es.cached.delete(victimId);
+          delete es.readyTime[victimId];
+        }
+      }
+
+      if (getEdgeFreeStorage(es) >= svc.storageSize) {
+        es.cached.add(sid);
+        es.readyTime[sid] = currentTime + svc.retrievalTime;
+        es.justSwapped = true;
+        stats.totalSwaps++;
+        stats.bandwidthCost += svc.bandwidthCost;
+        stats.retrievalDowntime += svc.retrievalTime;
+        return true;
+      }
+      return false;
+    }
+
+    // =========================================================================
+    // 3. STEP ONE TIME SLOT FORWARD
+    // =========================================================================
+    function stepSlot() {
+      if (currentSlot >= MAX_SLOTS) {
+        pauseSimulation();
+        return;
+      }
+
+      const scenario = document.getElementById('sel-scenario').value;
+      const policy = document.getElementById('sel-policy').value;
+      const lambda = parseFloat(document.getElementById('slider-lambda').value);
+      const gamma = parseFloat(document.getElementById('slider-gamma').value);
+
+      // Clear swap flash flags
+      edges.forEach(es => { es.justSwapped = false; });
+
+      // Apply workload scenario dynamics
+      if (scenario === 'gradual') {
+        for (let k = 0; k < 5; k++) {
+          const idx = Math.floor(rng() * (NUM_SERVICES - 1));
+          [ranking[idx], ranking[idx + 1]] = [ranking[idx + 1], ranking[idx]];
+        }
+      } else if (scenario === 'sudden_spike' && (currentSlot === 25 || currentSlot === 37)) {
+        triggerPopularityShift(`Scheduled Spike at Slot ${currentSlot}`);
+      }
+
+      const slotStart = currentSlot * SLOT_DURATION;
+      const hitsBefore = stats.cacheHits;
+      const missesBefore = stats.cacheMisses;
+      const slotDemand = new Array(NUM_SERVICES).fill(0);
+
+      // Generate & offload 40 tasks in this slot
+      for (let i = 0; i < TASKS_PER_SLOT; i++) {
+        const sid = sampleZipfService(1.0);
+        slotDemand[sid]++;
+        const task = {
+          serviceId: sid,
+          arrivalTime: slotStart + (i / TASKS_PER_SLOT) * SLOT_DURATION,
+          cpuDemand: 0.5 + rng() * 0.7,
+          inputData: 5.0 + rng() * 1.0,
+          outputData: 0.2 + rng() * 0.3,
+          deadline: 1.0 + rng() * 4.0
+        };
+
+        offloadTask(task);
+
+        // Reactive LRU / LFU fetches AFTER a miss
+        if (policy === 'lru' || policy === 'lfu') {
+          if (!edges.some(es => es.cached.has(sid))) {
+            let targetIdx = 0;
+            for (let e = 1; e < NUM_EDGES; e++) {
+              if (edges[e].cpuFreeTime < edges[targetIdx].cpuFreeTime) targetIdx = e;
+            }
+            const targetEs = edges[targetIdx];
+            const victims = Array.from(targetEs.cached).sort((a, b) => {
+              if (policy === 'lru') return (lastUsed[targetIdx][a] || -1) - (lastUsed[targetIdx][b] || -1);
+              return freqCount[targetIdx][a] - freqCount[targetIdx][b];
+            });
+            installService(targetEs, sid, task.arrivalTime, victims);
+            lastUsed[targetIdx][sid] = task.arrivalTime;
+          }
+        }
+
+        edges.forEach((es, idx) => {
+          if (es.cached.has(sid)) {
+            lastUsed[idx][sid] = task.arrivalTime;
+            freqCount[idx][sid]++;
+          }
+        });
+      }
+
+      // End-of-slot Caching Policy Execution (timed in ms)
+      const t0 = performance.now();
+      const slotEnd = (currentSlot + 1) * SLOT_DURATION;
+      let swapsThisSlot = 0;
+
+      if (policy === 'greedy') {
+        const rankedSlot = Array.from({ length: NUM_SERVICES }, (_, i) => i)
+          .sort((a, b) => slotDemand[b] - slotDemand[a]);
+
+        edges.forEach((es, eIdx) => {
+          const offset = eIdx % 4;
+          const rotated = rankedSlot.slice(offset).concat(rankedSlot.slice(0, offset));
+          const desired = [];
+          let usedMem = 0;
+          for (const sid of rotated) {
+            if (usedMem + services[sid].storageSize <= es.storageCapacity) {
+              desired.push(sid);
+              usedMem += services[sid].storageSize;
+            }
+          }
+          const victims = Array.from(es.cached)
+            .filter(s => !desired.includes(s))
+            .sort((a, b) => slotDemand[a] - slotDemand[b]);
+
+          for (const sid of desired) {
+            if (!es.cached.has(sid) && installService(es, sid, slotEnd, victims)) {
+              swapsThisSlot++;
+            }
+          }
+        });
+      } else if (policy === 'proposed') {
+        // Update EWMA Demand Estimator
+        for (let s = 0; s < NUM_SERVICES; s++) {
+          ewmaDemand[s] = gamma * ewmaDemand[s] + (1 - gamma) * slotDemand[s];
+        }
+
+        const horizon = 6;
+        const replicaCounts = new Array(NUM_SERVICES).fill(0);
+        edges.forEach(es => es.cached.forEach(s => replicaCounts[s]++));
+
+        const benefitDensity = (sid, reps) => {
+          const predReq = ewmaDemand[sid] * horizon;
+          const repFactor = 1.0 / (1.0 + 0.35 * reps);
+          return (predReq * 0.45 * repFactor) / services[sid].storageSize;
+        };
+
+        const penaltyDensity = (sid) => {
+          const rawCost = services[sid].bandwidthCost + services[sid].retrievalTime * 10.0;
+          return (lambda * rawCost) / services[sid].storageSize;
+        };
+
+        edges.forEach(es => {
+          const candidates = [];
+          for (let s = 0; s < NUM_SERVICES; s++) {
+            if (!es.cached.has(s) && ewmaDemand[s] > 0.05) candidates.push(s);
+          }
+          candidates.sort((a, b) =>
+            (benefitDensity(b, replicaCounts[b]) - penaltyDensity(b)) -
+            (benefitDensity(a, replicaCounts[a]) - penaltyDensity(a))
+          );
+
+          for (const candId of candidates.slice(0, 10)) {
+            const candNet = benefitDensity(candId, replicaCounts[candId]) - penaltyDensity(candId);
+            const candSize = services[candId].storageSize;
+
+            if (getEdgeFreeStorage(es) >= candSize) {
+              if (candNet > 0) {
+                es.cached.add(candId);
+                es.readyTime[candId] = slotEnd + services[candId].retrievalTime;
+                es.justSwapped = true;
+                replicaCounts[candId]++;
+                stats.totalSwaps++;
+                stats.bandwidthCost += services[candId].bandwidthCost;
+                stats.retrievalDowntime += services[candId].retrievalTime;
+                swapsThisSlot++;
+              }
+              continue;
+            }
+
+            const victims = Array.from(es.cached).sort((a, b) =>
+              benefitDensity(a, Math.max(0, replicaCounts[a] - 1)) -
+              benefitDensity(b, Math.max(0, replicaCounts[b] - 1))
+            );
+
+            let freed = getEdgeFreeStorage(es);
+            const pool = [];
+            let victimValSum = 0;
+            for (const vId of victims) {
+              if (freed >= candSize) break;
+              pool.push(vId);
+              freed += services[vId].storageSize;
+              victimValSum += benefitDensity(vId, Math.max(0, replicaCounts[vId] - 1));
+            }
+
+            if (freed >= candSize && candNet > victimValSum) {
+              for (const vId of pool) {
+                es.cached.delete(vId);
+                delete es.readyTime[vId];
+                replicaCounts[vId]--;
+              }
+              es.cached.add(candId);
+              es.readyTime[candId] = slotEnd + services[candId].retrievalTime;
+              es.justSwapped = true;
+              replicaCounts[candId]++;
+              stats.totalSwaps++;
+              stats.bandwidthCost += services[candId].bandwidthCost;
+              stats.retrievalDowntime += services[candId].retrievalTime;
+              swapsThisSlot++;
+            }
+          }
+        });
+      }
+
+      const elapsedMs = performance.now() - t0;
+      stats.lastDecisionMs = policy === 'static' ? 0.0 : Math.max(0.05, elapsedMs);
+
+      const sHits = stats.cacheHits - hitsBefore;
+      const sMisses = stats.cacheMisses - missesBefore;
+      const slotHitRate = (sHits + sMisses) > 0 ? (sHits / (sHits + sMisses)) * 100 : 0;
+
+      stats.hitHistory.push(slotHitRate);
+      stats.bwHistory.push(stats.bandwidthCost);
+
+      if (swapsThisSlot > 0) {
+        logEvent(`Slot ${currentSlot + 1}: Executed ${swapsThisSlot} cost-aware cache swap(s) | Hit Ratio: ${slotHitRate.toFixed(1)}%`, 'emerald');
+      } else if (currentSlot % 5 === 0) {
+        logEvent(`Slot ${currentSlot + 1}: Processed 40 tasks | Hit Ratio: ${slotHitRate.toFixed(1)}% | BW Cost: ${stats.bandwidthCost.toFixed(0)}`, 'slate');
+      }
+
+      currentSlot++;
+      updateKPIs();
+      renderEdgeGrid();
+      drawTelemetryChart();
+
+      if (currentSlot >= MAX_SLOTS) {
+        pauseSimulation();
+        logEvent(`Simulation complete (50 slots, 2,000 tasks). Final Hit Ratio: ${((stats.cacheHits / stats.totalTasks) * 100).toFixed(1)}%.`, 'amber');
+      }
+    }
+
+    function triggerPopularityShift(reason) {
+      // Rotate top 30 services with bottom 30 services
+      ranking = ranking.slice(30).concat(ranking.slice(0, 30));
+      stats.spikeSlots.push(currentSlot);
+      const banner = document.getElementById('spike-banner');
+      banner.classList.remove('hidden');
+      setTimeout(() => banner.classList.add('hidden'), 2600);
+      logEvent(`⚡ ${reason}: Service popularity ranking abruptly shifted!`, 'amber');
+    }
+
+    function triggerManualSpike() {
+      triggerPopularityShift(`Manual Demand Spike at Slot ${currentSlot}`);
+      drawTelemetryChart();
+    }
+
+    // =========================================================================
+    // 4. UI UPDATES, TOPOLOGY ANIMATION & TELEMETRY CHARTS
+    // =========================================================================
+    function updateKPIs() {
+      const hitPct = stats.totalTasks > 0 ? (stats.cacheHits / stats.totalTasks) * 100 : 0;
+      const accPct = stats.totalTasks > 0 ? (stats.acceptedTasks / stats.totalTasks) * 100 : 0;
+      const avgLat = stats.completionTimes.length > 0
+        ? stats.completionTimes.reduce((a, b) => a + b, 0) / stats.completionTimes.length
+        : 0;
+
+      document.getElementById('kpi-hit').textContent = `${hitPct.toFixed(1)}%`;
+      document.getElementById('kpi-slot-badge').textContent = `Slot ${currentSlot} / ${MAX_SLOTS}`;
+      document.getElementById('kpi-accept').textContent = `${accPct.toFixed(1)}%`;
+      document.getElementById('kpi-bw').textContent = Math.round(stats.bandwidthCost).toLocaleString();
+      document.getElementById('kpi-swaps').textContent = `${stats.totalSwaps} cache swaps`;
+      document.getElementById('kpi-downtime').textContent = `${stats.retrievalDowntime.toFixed(1)}s`;
+      document.getElementById('kpi-latency').textContent = `${avgLat.toFixed(2)}s`;
+      document.getElementById('kpi-runtime').textContent = `${stats.lastDecisionMs.toFixed(2)}ms`;
+    }
+
+    function renderEdgeGrid() {
+      const grid = document.getElementById('edge-grid');
+      grid.innerHTML = edges.map(es => {
+        const used = getEdgeUsedStorage(es);
+        const pct = Math.min(100, (used / es.storageCapacity) * 100);
+        const cachedArr = Array.from(es.cached).slice(0, 6);
+        const badges = cachedArr.map(sid => {
+          const isHot = ranking.indexOf(sid) < 12;
+          return `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono ${isHot ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-slate-800 text-slate-300'}">S${sid}</span>`;
+        }).join('');
+
+        return `
+          <div class="bg-slate-950 border ${es.justSwapped ? 'border-emerald-500 swap-flash' : 'border-slate-800'} rounded-xl p-3 transition-all">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-bold text-white font-mono">Edge #${es.id + 1}</span>
+              <span class="text-[10px] font-mono ${es.justSwapped ? 'text-emerald-400 font-semibold' : 'text-slate-400'}">
+                ${es.justSwapped ? '↻ SWAPPED' : `${Math.round(used)}/${es.storageCapacity}GB`}
+              </span>
+            </div>
+            <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden mb-2">
+              <div class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 transition-all duration-300" style="width: ${pct}%"></div>
+            </div>
+            <div class="flex flex-wrap gap-1 min-h-[22px]">
+              ${badges || '<span class="text-[10px] text-slate-500">Empty</span>'}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function logEvent(msg, tone = 'slate') {
+      const log = document.getElementById('event-log');
+      const colorMap = {
+        emerald: 'text-emerald-400',
+        amber: 'text-amber-300',
+        slate: 'text-slate-300'
+      };
+      const div = document.createElement('div');
+      div.className = colorMap[tone] || 'text-slate-300';
+      div.textContent = msg;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // Animated Topology Canvas
+    function spawnParticle(type, targetIdx) {
+      if (particles.length > 45) particles.shift();
+      particles.push({
+        type,
+        targetIdx,
+        progress: 0,
+        speed: 0.03 + Math.random() * 0.025,
+        yOffset: (Math.random() - 0.5) * 24
+      });
+    }
+
+    function animateTopology() {
+      const container = document.getElementById('topology-container');
+      const canvas = document.getElementById('topology-canvas');
+      if (!canvas || container.offsetParent === null) {
+        requestAnimationFrame(animateTopology);
+        return;
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+      }
+
+      const ctx = canvas.getContext('2d');
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      const iotPos = { x: w * 0.14, y: h * 0.5 };
+      const edgePos = { x: w * 0.52, y: h * 0.34 };
+      const cloudPos = { x: w * 0.86, y: h * 0.68 };
+
+      // Draw connecting links
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.35)';
+      ctx.beginPath();
+      ctx.moveTo(iotPos.x, iotPos.y);
+      ctx.lineTo(edgePos.x, edgePos.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.3)';
+      ctx.beginPath();
+      ctx.moveTo(iotPos.x, iotPos.y);
+      ctx.lineTo(cloudPos.x, cloudPos.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+      ctx.beginPath();
+      ctx.moveTo(edgePos.x, edgePos.y);
+      ctx.lineTo(cloudPos.x, cloudPos.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Update & draw particles
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.progress += p.speed;
+        if (p.progress >= 1) {
+          particles.splice(i, 1);
+          continue;
+        }
+
+        const dest = p.type === 'edge' ? edgePos : cloudPos;
+        const t = p.progress;
+        const cx = iotPos.x + (dest.x - iotPos.x) * t;
+        const cy = iotPos.y + (dest.y - iotPos.y) * t + Math.sin(t * Math.PI) * p.yOffset;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = p.type === 'edge' ? '#10b981' : (p.type === 'cloud' ? '#38bdf8' : '#f43f5e');
+        ctx.fill();
+      }
+
+      // Draw Nodes
+      drawNodeBox(ctx, iotPos.x, iotPos.y, 'IoT / Mobile', '40 tasks/slot', '#64748b');
+      drawNodeBox(ctx, edgePos.x, edgePos.y, 'Edge Cluster (10x)', '60 Mbps • 20 GHz', '#10b981');
+      drawNodeBox(ctx, cloudPos.x, cloudPos.y, 'Remote Cloud (3x)', '15 Mbps • ∞ Storage', '#38bdf8');
+
+      ctx.restore();
+      requestAnimationFrame(animateTopology);
+    }
+
+    function drawNodeBox(ctx, x, y, title, sub, accent) {
+      const bw = 128;
+      const bh = 52;
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.roundRect(x - bw / 2, y - bh / 2, bw, bh, 12);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '600 11px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(title, x, y - 4);
+
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '500 10px JetBrains Mono, monospace';
+      ctx.fillText(sub, x, y + 12);
+    }
+
+    // Dual Line Telemetry Chart (Hit Ratio % & Bandwidth Cost)
+    function drawTelemetryChart() {
+      const container = document.getElementById('chart-container');
+      const canvas = document.getElementById('telemetry-canvas');
+      if (!canvas || container.offsetParent === null) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+
+      const ctx = canvas.getContext('2d');
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+
+      const pad = { top: 20, right: 48, bottom: 28, left: 42 };
+      const plotW = w - pad.left - pad.right;
+      const plotH = h - pad.top - pad.bottom;
+
+      // Grid lines
+      ctx.strokeStyle = 'rgba(51, 65, 85, 0.45)';
+      ctx.lineWidth = 1;
+      for (let g = 0; g <= 4; g++) {
+        const y = pad.top + (plotH * g) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + plotW, y);
+        ctx.stroke();
+
+        ctx.fillStyle = '#64748b';
+        ctx.font = '10px JetBrains Mono, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${100 - g * 25}%`, pad.left - 6, y + 3);
+      }
+
+      // Draw spike vertical markers
+      stats.spikeSlots.forEach(sIdx => {
+        const sx = pad.left + (sIdx / MAX_SLOTS) * plotW;
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(sx, pad.top);
+        ctx.lineTo(sx, pad.top + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      });
+
+      const n = stats.hitHistory.length;
+      if (n > 0) {
+        // 1. Hit Ratio Line (Emerald)
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        stats.hitHistory.forEach((val, idx) => {
+          const px = pad.left + ((idx + 1) / MAX_SLOTS) * plotW;
+          const py = pad.top + plotH - (Math.min(100, val) / 100) * plotH;
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+
+        // 2. Cumulative BW Cost Line (Rose, scaled to max BW)
+        const maxBw = Math.max(20000, ...stats.bwHistory);
+        ctx.strokeStyle = '#f43f5e';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        stats.bwHistory.forEach((val, idx) => {
+          const px = pad.left + ((idx + 1) / MAX_SLOTS) * plotW;
+          const py = pad.top + plotH - (val / maxBw) * plotH;
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+
+        // Right Y-axis label for BW
+        ctx.fillStyle = '#f43f5e';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${Math.round(maxBw / 1000)}k`, pad.left + plotW + 6, pad.top + 8);
+        ctx.fillText('0', pad.left + plotW + 6, pad.top + plotH);
+      }
+
+      // X-axis labels
+      ctx.fillStyle = '#64748b';
+      ctx.textAlign = 'center';
+      ctx.fillText('Slot 0', pad.left, h - 8);
+      ctx.fillText('Slot 25 (Spike)', pad.left + plotW * 0.5, h - 8);
+      ctx.fillText('Slot 50', pad.left + plotW, h - 8);
+
+      ctx.restore();
+    }
+
+    // =========================================================================
+    // 5. CONTROLS & NAVIGATION
+    // =========================================================================
+    function updateParamLabels() {
+      document.getElementById('val-lambda').textContent = parseFloat(document.getElementById('slider-lambda').value).toFixed(3);
+      document.getElementById('val-gamma').textContent = parseFloat(document.getElementById('slider-gamma').value).toFixed(2);
+      document.getElementById('val-storage').textContent = `${document.getElementById('slider-storage').value} GB`;
+      const spd = parseInt(document.getElementById('slider-speed').value, 10);
+      document.getElementById('val-speed').textContent = `${(spd * 0.5).toFixed(1)}x`;
+      if (isRunning) {
+        pauseSimulation();
+        startSimulation();
+      }
+    }
+
+    function togglePlay() {
+      if (isRunning) pauseSimulation();
+      else startSimulation();
+    }
+
+    function startSimulation() {
+      if (currentSlot >= MAX_SLOTS) initSystem();
+      isRunning = true;
+      document.getElementById('icon-play').textContent = '⏸';
+      document.getElementById('text-play').textContent = 'Pause';
+      const spd = parseInt(document.getElementById('slider-speed').value, 10);
+      const intervalMs = Math.max(120, 750 - spd * 130);
+      simTimer = setInterval(stepSlot, intervalMs);
+    }
+
+    function pauseSimulation() {
+      isRunning = false;
+      document.getElementById('icon-play').textContent = '▶';
+      document.getElementById('text-play').textContent = 'Start';
+      if (simTimer) clearInterval(simTimer);
+    }
+
+    function resetSimulation() {
+      pauseSimulation();
+      initSystem();
+    }
+
+    function switchTab(tab) {
+      const liveView = document.getElementById('view-live');
+      const benchView = document.getElementById('view-bench');
+      const btnLive = document.getElementById('tab-live');
+      const btnBench = document.getElementById('tab-bench');
+
+      if (tab === 'live') {
+        liveView.classList.remove('hidden');
+        benchView.classList.add('hidden');
+        btnLive.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-emerald-600 text-white shadow';
+        btnBench.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white';
+        drawTelemetryChart();
+      } else {
+        pauseSimulation();
+        liveView.classList.add('hidden');
+        benchView.classList.remove('hidden');
+        btnBench.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-emerald-600 text-white shadow';
+        btnLive.className = 'px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-400 hover:text-white';
+      }
+    }
+
+    window.addEventListener('resize', drawTelemetryChart);
+    window.onload = function() {
+      updateParamLabels();
+      initSystem();
+      animateTopology();
+    };
+  </script>
+</body>
+</html>
